@@ -37,6 +37,7 @@ if uploaded_file is not None:
         result = response.json()
 
         # 取得したグラフ画像をデコードして表示
+        st.markdown("### あなたと似ている WEAR のコーディネート")
         graph_image_base64 = result.get("graph_image")
         if graph_image_base64:
             graph_image = decode_base64_to_image(graph_image_base64)
@@ -44,16 +45,25 @@ if uploaded_file is not None:
         else:
             st.warning("グラフ画像が取得できませんでした。")
 
-        st.markdown("### Similar Wear")
+        st.markdown("### あなたのコーデと似ている WEAR の投稿 Top 5")
         similar_wears = result.get("similar_wear", [])
 
-        # レコメンドされた各画像を表示
+        # レコメンドされた各画像を表示（画像クリックで投稿URLに遷移）
         for item in similar_wears:
             username = item.get("username", "Unknown")
             similar_image_base64 = item.get("image_base64")
+            post_url = item.get("post_url", "#")
             if similar_image_base64:
-                similar_image = decode_base64_to_image(similar_image_base64)
-                st.image(similar_image, caption=f"Username: {username}", width=200)
+                # HTMLを利用して画像をリンクとして表示（unsafe_allow_html=True に注意）
+                clickable_html = f'''
+                <div style="display:inline-block; margin:10px; text-align:center;">
+                    <a href="{post_url}" target="_blank">
+                        <img src="data:image/png;base64,{similar_image_base64}" width="200" style="border: 1px solid #ddd; border-radius: 4px; padding: 5px;">
+                    </a>
+                    <p>Username: {username}</p>
+                </div>
+                '''
+                st.markdown(clickable_html, unsafe_allow_html=True)
             else:
                 st.warning(f"{username} の画像が取得できませんでした。")
     else:
