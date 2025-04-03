@@ -1,0 +1,10 @@
+matplotlib
+torch
+transformers
+numpy
+pillow
+pandas
+beautifulsoup4
+requestsls
+uvicorn
+streamlit
