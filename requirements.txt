@@ -5,6 +5,6 @@ numpy
 pillow
 pandas
 beautifulsoup4
-requestsls
+requests
 uvicorn
 streamlit

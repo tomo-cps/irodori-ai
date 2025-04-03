@@ -39,6 +39,7 @@ QUERY_ICON_ZOOM = 0.3
 # グローバル変数（データセット情報）
 dataset_image_urls = []
 dataset_ids = []
+dataset_post_urls = []   # 追加：投稿URLを格納するリスト
 dataset_embeddings = []  # 各画像のembedding（numpy配列）
 prefix_to_color = {}
 icon_image = {
@@ -124,12 +125,13 @@ def load_dataset_and_embeddings():
     CSVからデータ読み込み、SQLite DBを用いて各画像のembeddingを取得・計算、
     外れ値除去、色の割当を行う。
     """
-    global dataset_image_urls, dataset_ids, dataset_embeddings, prefix_to_color
+    global dataset_image_urls, dataset_ids, dataset_post_urls, dataset_embeddings, prefix_to_color
 
-    # CSVから画像URLとIDを読み込み
+    # CSVから画像URL, ID, 投稿URLを読み込み
     df = pd.read_csv(DATA_CSV_PATH)
     dataset_image_urls = df["image_url"].tolist()
     dataset_ids = df["id"].tolist()
+    dataset_post_urls = df["post_url"].tolist()  # 追加：投稿URLの読み込み
 
     # SQLite DB接続（なければ作成）
     conn = sqlite3.connect(EMBEDDINGS_DB_PATH)
@@ -179,6 +181,7 @@ def load_dataset_and_embeddings():
     # 外れ値除去後のリスト更新
     dataset_image_urls = [dataset_image_urls[i] for i in non_outlier_indices]
     dataset_ids = [dataset_ids[i] for i in non_outlier_indices]
+    dataset_post_urls = [dataset_post_urls[i] for i in non_outlier_indices]  # 追加
     dataset_embeddings = [embeddings_list[i] for i in non_outlier_indices]
 
     # idのプレフィックスから色を割り当て（wearのユーザー名とみなす）
@@ -203,6 +206,7 @@ class QueryInput(BaseModel):
 class SimilarWearItem(BaseModel):
     username: str
     image_base64: str
+    post_url: str   # 追加：投稿へのURLを含める
 
 class PredictResponse(BaseModel):
     graph_image: str
@@ -305,7 +309,7 @@ def predict(query: QueryInput):
     )
     
     # --- 中心画像のリサイズ ---
-    # 入力画像の大きさに注意し、最大幅300px、最大高さ400pxに収まるようリサイズ（アスペクト比維持）
+    # 入力画像の大きさに注意し、最大幅100px、最大高さ130pxに収まるようリサイズ（アスペクト比維持）
     MAX_CENTER_WIDTH = 100
     MAX_CENTER_HEIGHT = 130
     original_width, original_height = query_image.size
@@ -372,6 +376,7 @@ def predict(query: QueryInput):
     for idx in top_5:
         username = dataset_ids[idx].split("_")[0]
         image_url = dataset_image_urls[idx]
+        post_url = dataset_post_urls[idx]  # 追加：投稿URLを取得
         try:
             response = requests.get(image_url, stream=True, timeout=10)
             sim_image = Image.open(response.raw).convert("RGB")
@@ -383,7 +388,9 @@ def predict(query: QueryInput):
             image_sim_base64 = ""
         similar_wear.append({
             "username": username,
-            "image_base64": image_sim_base64
+            "image_base64": image_sim_base64,
+            "image_url": image_url,
+            "post_url": post_url  # 追加：投稿URLを出力データに含める
         })
     
     return PredictResponse(graph_image=graph_base64, similar_wear=similar_wear)

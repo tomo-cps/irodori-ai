@@ -14,29 +14,39 @@ def scrape_wear_image_urls(url):
     response = requests.get(url, headers=headers)
     soup = BeautifulSoup(response.text, "html.parser")
 
-    # 画像URLの抽出＋フィルタ
-    urls = sorted({
-        tag['src']
-        for tag in soup.find_all('img', src=True)
-        if tag['src'].startswith("https://images.wear2.jp/coordinate/")
-    })
-
-    # 正規表現でユーザー名を抽出
+    # ユーザー名の抽出
     match = re.search(r"https?://wear\.jp/([^/]+)/?", url)
     username = match.group(1) if match else "wear_user"
+
+    # 画像と投稿URLの紐付け
+    data = []
+    seen = set()
+    for a_tag in soup.find_all("a", href=True):
+        href = a_tag["href"]
+        match = re.match(rf"^/{username}/(\d+)/$", href)
+        if match:
+            post_id = match.group(1)
+            post_url = f"https://wear.jp{href}"
+            img_tag = a_tag.find("img", src=True)
+            if img_tag:
+                img_url = img_tag["src"]
+                if img_url.startswith("https://images.wear2.jp/coordinate/") and img_url not in seen:
+                    seen.add(img_url)
+                    data.append((img_url, post_url))
 
     # CSVファイル名
     os.makedirs("data", exist_ok=True)
     csv_filename = f"data/fashion_{username}.csv"
 
-    # CSVに保存（ID列にユーザー名を含める）
+    # CSVに保存
     with open(csv_filename, mode='w', newline='', encoding='utf-8') as f:
         writer = csv.writer(f)
-        writer.writerow(["id", "image_url"])
-        for idx, img_url in enumerate(urls, start=1):
-            writer.writerow([f"{username}_{idx}", img_url])
+        writer.writerow(["id", "user_name", "image_url", "post_url"])
+        for idx, (img_url, post_url) in enumerate(data, start=1):
+            writer.writerow([f"{username}_{idx}", username, img_url, post_url])
 
-    print(f"画像URLを {csv_filename} に保存しました（{len(urls)} 件）。")
+    print(f"画像URLを {csv_filename} に保存しました（{len(data)} 件）。")
+
 
 def merge_csv_files(output_file="data/merged_fashion.csv"):
     csv_files = glob.glob("data/fashion_*.csv")
@@ -53,14 +63,24 @@ def merge_csv_files(output_file="data/merged_fashion.csv"):
 urls = [
     "https://wear.jp/yusukeogura20020903/",
     "https://wear.jp/tyomoki/",
-    "https://wear.jp/kyota0245/",
-    "https://wear.jp/osayu912abc/",
-    "https://wear.jp/sensenakajima/",
-    "https://wear.jp/moken/",
-    "https://wear.jp/riho0914/",
-    "https://wear.jp/1107my/",
-    "https://wear.jp/misane1209/",
-    "https://wear.jp/kuruminn61/"
+    # "https://wear.jp/kyota0245/",
+    # "https://wear.jp/osayu912abc/",
+    # "https://wear.jp/sensenakajima/",
+    # "https://wear.jp/moken/",
+    # "https://wear.jp/riho0914/",
+    # "https://wear.jp/1107my/",
+    # "https://wear.jp/misane1209/",
+    # "https://wear.jp/kuruminn61/",
+    # "https://wear.jp/coltwear/",
+    # "https://wear.jp/crewtiger/",
+    # "https://wear.jp/itkwear/",
+    # "https://wear.jp/11shion28/",
+    # "https://wear.jp/kkren9610/",
+    # "https://wear.jp/maypikapi/",
+    # "https://wear.jp/maira0818/",
+    # "https://wear.jp/0116mn/",
+    # "https://wear.jp/10momoon10/",
+    # "https://wear.jp/loveyxoxo/",
 ]
 
 for url in urls:
