@@ -10,17 +10,20 @@ import requests
 import pandas as pd
 import numpy as np
 import torch
-from PIL import Image
+from PIL import Image, ImageDraw
 from transformers import CLIPProcessor, CLIPModel
 from sklearn.metrics.pairwise import cosine_similarity
 import networkx as nx
 import matplotlib
 matplotlib.use('Agg')  # 非表示バックエンドを指定
 import matplotlib.pyplot as plt
+import matplotlib.font_manager as fm
+plt.rcParams["font.family"] = "Noto Sans CJK JP"
 
 # 追加: torchvisionを用いた人物検出用モジュール
 import torchvision
 from torchvision import transforms as T
+from matplotlib.offsetbox import OffsetImage, AnnotationBbox
 
 # -------------------------------
 # グローバル設定・初期化
@@ -30,12 +33,36 @@ EMBEDDINGS_DB_PATH = "embeddings.db"               # SQLite DBのパス
 SIMILARITY_THRESHOLD = 0.7                         # グラフ作成用の閾値（必要に応じて調整）
 TOP_K = 30                                       # 出力グラフのノード数（上位30件）
 SAMPLE_SIZE = 60
+ICON_ZOOM = 0.06
+QUERY_ICON_ZOOM = 0.3
 
 # グローバル変数（データセット情報）
 dataset_image_urls = []
 dataset_ids = []
 dataset_embeddings = []  # 各画像のembedding（numpy配列）
-prefix_to_color = {}     # idのプレフィックスと色の対応
+prefix_to_color = {}
+icon_image = {
+    "riho0914": "https://images.wear2.jp/profile/rlipwVx5/esnOPkY6/1717473531_640.jpg",
+    "osayu912abc": "https://images.wear2.jp/profile/EJiWRaL/vB5Tsa8Z/1735117297_640.jpg",
+    "sensenakajima": "https://cdn.wimg.jp/profile/zbdysk/20210614202004353_640.jpg",
+    "kuruminn61": "https://images.wear2.jp/profile/7binY4xl/X6bnqpkv/1720241651_640.jpg",
+    "tyomoki": "https://images.wear2.jp/profile/8BiX8WOY/j25TWXtz/1715557148_640.jpg",
+    "kyota0245": "https://images.wear2.jp/profile/EJiqj7RD/6c4azuGZ/1739180663_640.jpg",
+    "moken": "https://cdn.wimg.jp/profile/e5gvvs/20210422190902624_640.jpg",
+    "1107my": "https://images.wear2.jp/profile/nZizJXW8/m0biIIts/1714111268_640.jpg",
+    "misane1209": "https://images.wear2.jp/profile/zaib64wl/MuQT1nEj/1710816720_640.jpg",
+    "yusukeogura20020903": "https://images.wear2.jp/profile/zaijQaw5/V62sSXtC/1701199778_640.jpg",
+    "coltwear": "https://images.wear2.jp/profile/Gri66bAY/5oSjAnxh/1701856953_640.jpg",
+    "crewtiger": "https://images.wear2.jp/profile/p3iqGb7q/xwheHquD/1743326937_640.jpg",
+    "itkwear": "https://images.wear2.jp/profile/PaikL34v/8hvHQhGn/1691053406_640.jpg",
+    "11shion28": "https://images.wear2.jp/profile/Z8iaZlkD/FcuxbiuY/1730267967_640.jpg",
+    "kkren9610": "https://images.wear2.jp/profile/gGizeg2J/dopOJL8C/1708341711_640.jpg",
+    "maypikapi": "https://images.wear2.jp/profile/7biBr06o/9iFONlV7/1742532001_640.jpg",
+    "maira0818": "https://images.wear2.jp/profile/lei2bGv7/VlD8B9NA/1731239452_640.jpg",
+    "0116mn": "https://images.wear2.jp/profile/QWivp2Ox/o2IwPuNa/1677513159_640.jpg",
+    "10momoon10": "https://images.wear2.jp/profile/GrigMn7m/Ci2Lbyg4/1655486994_640.jpg",
+    "loveyxoxo": "https://images.wear2.jp/profile/08iXYanQ/YmhcAPjJ/1721650191_640.jpg"
+}
 
 # CLIPモデルとプロセッサの読み込み（アプリ起動時に一度だけ読み込み）
 model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32")
@@ -129,7 +156,7 @@ def load_dataset_and_embeddings():
                 image = Image.open(response.raw).convert("RGB")
             except Exception as e:
                 print(f"{url} の画像取得エラー: {e}")
-                vector = np.zeros(512)  # エラー時はゼロベクトル（必要に応じて処理変更）
+                vector = np.zeros(512)  # エラー時はゼロベクトル
             else:
                 vector = compute_embedding(image)
                 cursor.execute("INSERT INTO embeddings (image_url, embedding) VALUES (?, ?)",
@@ -170,13 +197,13 @@ def startup_event():
 # -------------------------------
 class QueryInput(BaseModel):
     image_base64: str  # 入力画像のbase64文字列
+    query_width: int = None    # （任意）中央画像の希望横幅（ピクセル）
+    query_height: int = None   # （任意）中央画像の希望縦幅（ピクセル）
 
-# similar_wear の各項目を表すモデル
 class SimilarWearItem(BaseModel):
     username: str
     image_base64: str
 
-# predict エンドポイントの出力形式（グラフ画像と類似wear情報）
 class PredictResponse(BaseModel):
     graph_image: str
     similar_wear: List[SimilarWearItem]
@@ -204,18 +231,19 @@ def predict(query: QueryInput):
     # 類似度が最も高い上位5件のインデックス
     top_5 = list(np.argsort(query_similarities)[-5:][::-1])
     
-    # 残りの全インデックス（トップ5以外）からランダムに25件を選択
+    # 残りの全インデックス（トップ5以外）からランダムにSAMPLE_SIZE件を選択
     all_indices = list(range(len(dataset_embeddings)))
     remaining_indices = list(set(all_indices) - set(top_5))
-    if len(remaining_indices) >= 25:
-        random_25 = np.random.choice(remaining_indices, size=SAMPLE_SIZE, replace=False)
+    if len(remaining_indices) >= SAMPLE_SIZE:
+        random_sample = np.random.choice(remaining_indices, size=SAMPLE_SIZE, replace=False)
     else:
-        random_25 = remaining_indices
-    # グラフに用いるインデックス（トップ5 + ランダム25）
-    graph_indices = list(top_5) + list(random_25)
+        random_sample = remaining_indices
+    # グラフに用いるインデックス（トップ5 + ランダムサンプル）
+    graph_indices = list(top_5) + list(random_sample)
     
     # --- グラフ構築（スター風レイアウト：類似度に応じた距離配置） ---
     G_query = nx.Graph()
+    # クエリノードのimage_urlはNoneとする
     G_query.add_node("query", image_url=None, color="red")
     for idx in graph_indices:
         prefix = dataset_ids[idx].split("_")[0]
@@ -253,7 +281,7 @@ def predict(query: QueryInput):
         y = node_radius * np.sin(theta[i])
         pos[idx] = np.array([x, y])
     
-    # ノードの色とサイズのみ設定（ノードに名前は付けません）
+    # ノードの色とサイズの設定
     node_colors = []
     node_sizes = []
     for node in G_query.nodes():
@@ -264,29 +292,75 @@ def predict(query: QueryInput):
             node_colors.append("orange")
             node_sizes.append(1000)
         else:
-            # ラベルは使用せず、色のみユーザーごとの設定
             prefix = dataset_ids[node].split("_")[0]
             node_colors.append(prefix_to_color.get(prefix, "blue"))
             node_sizes.append(700)
     
-    # グラフ描画（ラベル描画は行わず、ノードとエッジのみ表示）
+    # --- グラフ描画 ---
     fig, ax = plt.subplots(figsize=(8, 8), facecolor="white")
     ax.set_facecolor("white")
     nx.draw_networkx_edges(
         G_query, pos, 
         width=1.0, alpha=0.4, edge_color="gray"
     )
-    nx.draw_networkx_nodes(
-        G_query, pos,
-        node_size=node_sizes,
-        node_color=node_colors,
-        edgecolors="black", linewidths=0.5, alpha=0.9
-    )
     
-    plt.title("Similar Items", fontsize=14, fontweight="bold", color="black")
+    # --- 中心画像のリサイズ ---
+    # 入力画像の大きさに注意し、最大幅300px、最大高さ400pxに収まるようリサイズ（アスペクト比維持）
+    MAX_CENTER_WIDTH = 100
+    MAX_CENTER_HEIGHT = 130
+    original_width, original_height = query_image.size
+    scale_factor = min(MAX_CENTER_WIDTH / original_width, MAX_CENTER_HEIGHT / original_height, 1)
+    resized_width = int(original_width * scale_factor)
+    resized_height = int(original_height * scale_factor)
+    query_image_draw = query_image.resize((resized_width, resized_height), Image.LANCZOS)
+    
+    # ノード描画（中心ノードはリサイズ済み画像、その他は既存アイコン画像）
+    def crop_to_circle(img: Image.Image) -> Image.Image:
+        """
+        入力画像を正方形にクロップし、円形マスクを適用して円形画像を返す。
+        """
+        w, h = img.size
+        min_dim = min(w, h)
+        left = (w - min_dim) // 2
+        top = (h - min_dim) // 2
+        right = left + min_dim
+        bottom = top + min_dim
+        img_cropped = img.crop((left, top, right, bottom))
+        mask = Image.new("L", (min_dim, min_dim), 0)
+        draw = ImageDraw.Draw(mask)
+        draw.ellipse((0, 0, min_dim, min_dim), fill=255)
+        output = Image.new("RGBA", (min_dim, min_dim))
+        output.paste(img_cropped, (0, 0), mask)
+        return output
+
+    for node in G_query.nodes():
+        if node == "query":
+            im = OffsetImage(np.array(query_image_draw), zoom=1)
+            ab = AnnotationBbox(im, pos[node], frameon=False, pad=0.0)
+            ax.add_artist(ab)
+        else:
+            username = dataset_ids[node].split("_")[0]
+            if username in icon_image:
+                icon_url = icon_image[username]
+                try:
+                    response = requests.get(icon_url, stream=True, timeout=10)
+                    icon = Image.open(response.raw).convert("RGBA")
+                    icon = crop_to_circle(icon)
+                    print(f"ノード {node}（{username}）のアイコン画像サイズ: {icon.size[1]}x{icon.size[0]}")
+                except Exception as e:
+                    fallback_color = prefix_to_color.get(username, "blue")
+                    circle = plt.Circle(pos[node], 0.1, color=fallback_color, zorder=10)
+                    ax.add_artist(circle)
+                    continue
+                im = OffsetImage(np.array(icon), zoom=ICON_ZOOM)
+                ab = AnnotationBbox(im, pos[node], frameon=False, pad=0.0)
+                ax.add_artist(ab)
+            else:
+                fallback_color = prefix_to_color.get(username, "blue")
+                circle = plt.Circle(pos[node], 0.1, color=fallback_color, zorder=10)
+                ax.add_artist(circle)
+
     plt.axis("off")
-    
-    # グラフ画像をbase64に変換
     buf = io.BytesIO()
     plt.savefig(buf, format="png", dpi=150, bbox_inches='tight')
     plt.close(fig)
@@ -296,7 +370,7 @@ def predict(query: QueryInput):
     # --- similar_wear: 上位5件の類似画像を返す ---
     similar_wear = []
     for idx in top_5:
-        username = dataset_ids[idx].split("_")[0]  # idの先頭部分をユーザー名と仮定
+        username = dataset_ids[idx].split("_")[0]
         image_url = dataset_image_urls[idx]
         try:
             response = requests.get(image_url, stream=True, timeout=10)
@@ -312,7 +386,6 @@ def predict(query: QueryInput):
             "image_base64": image_sim_base64
         })
     
-    # 出力JSON：グラフ画像と類似wear情報（上位5件）を返す
     return PredictResponse(graph_image=graph_base64, similar_wear=similar_wear)
 
 # -------------------------------
@@ -321,6 +394,3 @@ def predict(query: QueryInput):
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000, reload=True)
-# if __name__ == "__main__":
-#     import uvicorn
-#     uvicorn.run(app, host="0.0.0.0", port=8000)
